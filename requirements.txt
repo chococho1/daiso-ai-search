@@ -1,0 +1,9 @@
+fastapi
+psycopg2-binary
+sentence-transformers
+transformers
+datasets
+peft
+tensorflow
+openai
+uvicorn
