@@ -3,7 +3,7 @@ from prompt.search_prompt import TOOL_DESCRIPTIONS
 import requests
 
 
-mcp = FastMCP("--- DaisoMall Search Mcp ---")
+mcp = FastMCP("daisomall-ai-search")
 
 
 @mcp.tool()
