@@ -19,7 +19,8 @@ def prod_search(query: str) -> list:
     results = result_set.get("result", [])
 
     if len(results) > 0:
-      product_list = results[1].get("resultDocuments", [])
+      #상위 5개만 상품 추출 ??(LLM 부하 감소하기 위해서)
+      product_list = results[1].get("resultDocuments", [])[:5]
       final_results = []
       for product in product_list:
         pdNo = product.get("pdNo")
@@ -27,20 +28,21 @@ def prod_search(query: str) -> list:
         pdPrc = product.get("pdPrc")
 
         # 상품상세 url
-        prod_detail_url = f"https://www.daisomall.co.kr/pd/pdr/SCR_PDR_0001?pdNo={pdNo}&recmYn=N"
+        # prod_detail_url = f"https://www.daisomall.co.kr/pd/pdr/SCR_PDR_0001?pdNo={pdNo}&recmYn=N"
 
         #필요한 정보만 넣기
         final_results.append({
           "상품명" : exhPdNm,
           "품번" : pdNo,
           "가격" : f"{pdPrc}원",
-          "링크" : f"[상품상세]({prod_detail_url})"
+          # "링크" : f"[상품상세]({prod_detail_url})"
         })
       return final_results
     else:
       return []
   except  Exception as e:
-    print("에러났음!!  -- {e}")
+    # 에러 발생 시 표준 출력(stdout)을 사용하면 MCP 프로토콜이 깨질 수 있으므로 로깅 방식을 변경하는 것이 좋습니다.
+    pass
   return
 
 prod_search.__doc__ = TOOL_DESCRIPTIONS["prod_search"]
