@@ -3,7 +3,9 @@ from fastapi import FastAPI
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from sentence_transformers import SentenceTransformer
-
+from util.get_db_config import get_db_config
+# 이 search_api.py 실행
+# 브라우저에서 http://localhost:8000/search?query=(자연어)  로 테스트.
 # 로그 메시지 숨기기 (선택 사항)
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
@@ -14,13 +16,7 @@ print("검색 모델 로딩 중...")
 model = SentenceTransformer('dragonkue/BGE-m3-ko')
 
 # 2. DB 설정
-DB_CONFIG = {
-    "host": "localhost",
-    "database": "postgres",
-    "user": "postgres",
-    "password": "chdnjs6918^^",
-    "port": 5432
-}
+DB_CONFIG = get_db_config("localDB.properties")
 
 def get_db_connection():
     return psycopg2.connect(**DB_CONFIG)
@@ -42,6 +38,7 @@ def search_products(query: str, limit: int = 5):
                 search_query = """
                 SELECT pd_no, pd_nm, 1 - (item_vector <=> %s::vector) AS similarity
                 FROM embedding_test
+                WHERE item_vector is not null
                 ORDER BY similarity DESC
                 LIMIT %s;
                 """
