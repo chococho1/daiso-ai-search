@@ -10,6 +10,8 @@ from psycopg2 import pool
 from fastapi import FastAPI
 from sentence_transformers import SentenceTransformer
 from psycopg2.extras import RealDictCursor
+from google import genai
+from google.genai import types
 from util.get_db_config import get_db_config
 from util.constants import system_instruction
 
@@ -17,9 +19,20 @@ from util.constants import system_instruction
 # 10코어 사양 최적화: 임베딩 모델에 4개 코어 할당
 torch.set_num_threads(4)
 
+# 성능과 속도의 밸런스가 가장 좋은 Flash 모델 사용
+# client = genai.Client(api_key="AIzaSyCCRWloF0cRPHTBNsvoHJ6uWQI6qGeHE5w")
+client = genai.Client(api_key="AIzaSyB_9bT_R8cTmYMKmhGiOZVeNcfsobT7Cew")
 print("BGE-M3 임베딩 모델 로딩 중...")
 embed_model = SentenceTransformer('dragonkue/BGE-m3-ko', device='cpu')
 
+print("--- [검증] 내 API 키로 접근 가능한 모델 목록 ---")
+try:
+    # 최신 SDK는 리스트를 가져올 때 속성 접근 방식을 다르게 합니다.
+    for m in client.models.list():
+        print(f"✅ 사용 가능 모델 ID: {m.name}")
+except Exception as e:
+    print(f"❌ 모델 목록 조회 실패: {e}")
+print("------------------------------------------")
 app = FastAPI()
 DB_CONFIG = get_db_config("localDB.properties")
 
@@ -32,56 +45,74 @@ db_pool = psycopg2.pool.SimpleConnectionPool(
 )
 logger = logging.getLogger("uvicorn")
 def extract_keywords_with_ollama(user_query: str):
-    url = "http://localhost:11434/api/generate"
+    # 1. Few-shot 프롬프트 (예시를 주면 10개를 꽉 채워서 답변합니다)
     prompt = f"""
-        [쇼핑 키워드 추출기]
-        규칙: 주어진 문장에 어울리는 연관 키워드 10개만 쉼표로 구분하여 출력한다. 본문 내용은 결과에 절대 포함하지 않는다.
-        [예시]
-        입력: 고양이 간식 추천
-        출력: 츄르, 고양이캔, 연어트릿, 고양이우유, 북어트릿, 칭찬용, 노령묘간식, 수분보충, 영양공급, 기호성테스트
+    당신은 쇼핑 키워드 추출기입니다. 사용자의 검색어와 연관된 상품, 상황, 대상 키워드를 설명없이, 반드시 10개만 추출하세요.
 
-        ---
-        입력: {user_query}
-        출력:"""
+    [예시]
+    입력: 강아지 간식
+    출력: 개껌, 져키, 수제간식, 노령견, 칭찬용, 대용량, 덴탈껌, 연어트릿, 고단백, 강아지간식추천
 
-    payload = {
-        "model": "gemma2:2b",
-        "prompt": prompt,
-        "system": system_instruction,
-        "stream": False,
-        "keep_alive": "0",
-        "options": {
-            "num_thread": 6,      # [핵심] 10에서 6으로 하향 (임베딩 자원 확보)
-            "num_predict": 30,    # [핵심] 더 짧게 끊어서 생성 시간 단축
-            "temperature": 0,
-            "top_k": 1,
-            "repeat_penalty": 1.2,
-            "stop": ["대상문장:", "입력:", "\n", user_query] # [추가] 질문이 나오는 순간 중단
-        }
-    }
+    [실제 작업]
+    입력: {user_query}
+    출력:"""
+
+    sys_config = types.GenerateContentConfig(
+        # system_instruction="쇼핑몰 검색 엔진용 키워드 추출기입니다. 설명 없이 쉼표로 구분된 키워드 10개만 출력하세요.",
+        temperature=0.1, # 0.2보다 약간 높여야 키워드가 중복되지 않고 풍부해집니다.
+        max_output_tokens=1000,
+        safety_settings=[
+            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+        ]
+    )
 
     try:
-        response = requests.post(url, json=payload, timeout=2)
-        response_json = response.json()
-        raw_result = response_json.get("response", "").strip()
-        print(raw_result)
-        # [디버깅] 터미널에 확실히 찍히도록 강제 출력
-        print("\n" + "="*50)
-        print(f"DEBUG - Raw LLM Response: [{raw_result}]")
-        print("="*50 + "\n")
-        # 만약 아무것도 안 왔다면?
-        if not raw_result:
-            print("⚠️ Ollama가 빈 응답을 보냈습니다. 모델 로드 상태를 확인하세요.")
-            return [user_query]
-        # 질문 도려내기 로직 (질문 따라하기 방지용)
-        if user_query in raw_result:
-            raw_result = raw_result.split(user_query)[-1].strip()
+        # 2. Gemini 호출 (contents를 리스트로 감싸서 전달)
+        response = client.models.generate_content(
+            model='models/gemma-3-1b-it', # 혹은 리스트에서 확인하신 정확한 ID
+            contents=[prompt],
+            config=sys_config
+        )
 
-        keywords = re.findall(r'[^,\n]+', raw_result)
-        refined_keywords = [re.sub(r'[^가-힣0-9\s]', '', k).strip() for k in keywords if len(k.strip()) > 1]
-        return refined_keywords[:10]
+        # 3. 텍스트 추출 (가장 안전한 방식)
+        raw_result = ""
+        try:
+            raw_result = response.text
+        except:
+            if response.candidates and response.candidates[0].content.parts:
+                raw_result = response.candidates[0].content.parts[0].text
+
+        raw_result = (raw_result or "").strip()
+
+        print("\n" + "🚀" * 20)
+        print(f"입력 검색어: {user_query}")
+        print(f"Gemini 원본 응답: [{raw_result}]")
+        print("🚀" * 20 + "\n")
+
+        if not raw_result:
+            return [user_query]
+
+        # 4. 정제 로직 (불필요한 문구 제거 및 분리)
+        # '출력:', '결과:' 등이 섞여 나올 경우를 대비
+        clean_text = re.sub(r'^(결과|출력|키워드)\s*[:：]\s*', '', raw_result, flags=re.IGNORECASE)
+
+        # 쉼표로 분리 후 정제
+        keywords = [k.strip() for k in clean_text.split(',')]
+
+        # 특수문자 제거 및 한글/숫자만 유지 (2글자 이상)
+        refined_keywords = []
+        for k in keywords:
+            # 한글, 숫자, 공백만 남기기
+            clean_k = re.sub(r'[^가-힣0-9\s]', '', k).strip()
+            if len(clean_k) >= 2 and clean_k != user_query:
+                refined_keywords.append(clean_k)
+
+        # 최종 10개 반환 (없으면 원본 쿼리라도 반환)
+        return refined_keywords[:10] if refined_keywords else [user_query]
+
     except Exception as e:
-        print(f"Ollama Error: {e}")
+        print(f"Gemini API Error: {e}")
         return [user_query]
 
 @app.get("/gemma-search")

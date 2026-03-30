@@ -56,18 +56,30 @@ if query:
             time.sleep(0.1) # 시각적 효과
             status.update(label="✅ 캐시 데이터 로드 완료!", state="complete")
     else:
-        with st.status("🧠 Gemma 2:2B가 의도를 분석하고 상품을 찾는 중...", expanded=True) as status:
+        with st.status("🧠 gemma-3-1b-it 가 의도를 분석하고 상품을 찾는 중...", expanded=True) as status:
             # gemma_search 호출 (이 안에서 LLM 키워드 추출 + 벡터 검색이 모두 수행됨)
             ai_search_res = gemma_search(query)
             # 결과 전체를 캐싱 (24시간)
             cache.set(query, ai_search_res, expire=86400)
             status.update(label="✅ AI 분석 및 벡터 검색 완료!", state="complete", expanded=False)
+            # 상태 바 바로 아래에 모델 정보 표시
+            st.markdown(
+                f"""
+                <div style='padding-left: 10px; margin-top: -10px; margin-bottom: 10px;'>
+                    <span style='color: #444; font-weight: 600; font-size: 0.9rem;'>
+                        🤖 사용된 모델: <code style='color: #ff4b4b;'>gemma-3-1b-it</code> |
+                        📂 임베딩 모델: <code style='color: #1f77b4;'>BGE-M3-ko</code>
+                    </span>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
     # 결과 데이터 분해
     keywords = ai_search_res.get("llm_recoommed_keywords", [])
     all_ai_results = ai_search_res.get("search_results", [])
     ollama_runtime = ai_search_res.get("ollama_runtime", 0)
-
+    total_ai_runtime = time.time() - start_time_total
     # 화면 분할
     col1, col2 = st.columns(2)
 
@@ -103,7 +115,7 @@ if query:
         st.success(f"확장 키워드: {keyword_str}")
 
         # 시간 측정: 캐시 적중 시 0에 수렴, 신규 쿼리 시 전체 수행 시간 계산
-        total_ai_runtime = time.time() - start_time_total
+        # total_ai_runtime = time.time() - start_time_total
         st.metric("AI 검색 총 소요 시간", f"{total_ai_runtime:.3f} s", delta="-95% (Cache Hit)" if is_cached else None)
 
         st.write(f"✅ 벡터 유사도 기반 상위 {len(all_ai_results)}개의 연관 상품")
