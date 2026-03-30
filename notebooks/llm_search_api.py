@@ -5,6 +5,7 @@ import json
 import torch
 import time
 import psycopg2
+import sqlite3
 import logging
 import numpy as np
 import streamlit as st
@@ -51,7 +52,7 @@ def extract_keywords_with_llm(user_query: str):
     # 1. Few-shot 프롬프트 (예시를 주면 10개를 꽉 채워서 답변합니다)
     prompt = f"""
     당신은 쇼핑 키워드 추출기입니다. 사용자의 검색어와 연관된 상품, 상황, 대상 키워드를 설명없이, 반드시 10개만 추출하세요.
-
+    설명 절대 하지마세요.
     [예시]
     입력: 강아지 간식
     출력: 개껌, 져키, 수제간식, 노령견, 칭찬용, 대용량, 덴탈껌, 연어트릿, 고단백, 강아지간식추천
@@ -121,10 +122,10 @@ def extract_keywords_with_llm(user_query: str):
 
 # --- 3. 벡터 유사도 검색 함수 (Numpy 기반) ---
 def search_in_sqlite(query_vector, limit=10):
-    conn = DB_CONFIG
+    conn = sqlite3.connect('search_data.db')
     cur = conn.cursor()
     # SQLite에서 전체 데이터 로드 (데이터가 아주 많지 않을 때 효율적)
-    cur.execute("SELECT pd_no, pd_nm, item_vector, pd_prc FROM embedding_test")
+    cur.execute("SELECT pd_no, pd_nm, item_vector FROM embedding_test")
     rows = cur.fetchall()
     conn.close()
 
@@ -132,7 +133,7 @@ def search_in_sqlite(query_vector, limit=10):
     q_vec = np.array(query_vector)
 
     for row in rows:
-        pd_no, pd_nm, v_blob, pd_prc = row
+        pd_no, pd_nm, v_blob = row
         if v_blob:
             # BLOB 데이터를 다시 float32 배열로 복원
             i_vec = np.frombuffer(v_blob, dtype=np.float32)
@@ -149,7 +150,6 @@ def search_in_sqlite(query_vector, limit=10):
                 "pd_no": pd_no,
                 "pd_nm": pd_nm,
                 "similarity": float(similarity),
-                "pd_prc": pd_prc
             })
 
     # 유사도 높은 순으로 정렬 후 상위 N개 반환
