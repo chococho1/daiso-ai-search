@@ -1,5 +1,5 @@
 from diskcache import Cache
-from llm_search_api import extract_keywords_with_ollama
+from llm_search_api import extract_keywords_with_llm
 import os
 
 # 현재 폴더에 'search_cache' 폴더 생성 후 데이터 저장
@@ -11,6 +11,6 @@ def get_smart_keywords(query):
         return cache[query]
 
     # 캐시 없을 때만 실행
-    result = extract_keywords_with_ollama(query)
+    result = extract_keywords_with_llm(query)
     cache.set(query, result, expire=86400) # 24시간 동안 유지
     return result

@@ -6,6 +6,8 @@ import torch
 import time
 import psycopg2
 import logging
+import numpy as np
+import streamlit as st
 from psycopg2 import pool
 from fastapi import FastAPI
 from sentence_transformers import SentenceTransformer
@@ -21,7 +23,8 @@ torch.set_num_threads(4)
 
 # 성능과 속도의 밸런스가 가장 좋은 Flash 모델 사용
 # client = genai.Client(api_key="AIzaSyCCRWloF0cRPHTBNsvoHJ6uWQI6qGeHE5w")
-client = genai.Client(api_key="AIzaSyB_9bT_R8cTmYMKmhGiOZVeNcfsobT7Cew")
+# client = genai.Client(api_key="")
+client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 print("BGE-M3 임베딩 모델 로딩 중...")
 embed_model = SentenceTransformer('dragonkue/BGE-m3-ko', device='cpu')
 
@@ -44,7 +47,7 @@ db_pool = psycopg2.pool.SimpleConnectionPool(
     **DB_CONFIG
 )
 logger = logging.getLogger("uvicorn")
-def extract_keywords_with_ollama(user_query: str):
+def extract_keywords_with_llm(user_query: str):
     # 1. Few-shot 프롬프트 (예시를 주면 10개를 꽉 채워서 답변합니다)
     prompt = f"""
     당신은 쇼핑 키워드 추출기입니다. 사용자의 검색어와 연관된 상품, 상황, 대상 키워드를 설명없이, 반드시 10개만 추출하세요.
@@ -115,42 +118,84 @@ def extract_keywords_with_ollama(user_query: str):
         print(f"Gemini API Error: {e}")
         return [user_query]
 
+
+# --- 3. 벡터 유사도 검색 함수 (Numpy 기반) ---
+def search_in_sqlite(query_vector, limit=10):
+    conn = DB_CONFIG
+    cur = conn.cursor()
+    # SQLite에서 전체 데이터 로드 (데이터가 아주 많지 않을 때 효율적)
+    cur.execute("SELECT pd_no, pd_nm, item_vector, pd_prc FROM embedding_test")
+    rows = cur.fetchall()
+    conn.close()
+
+    results = []
+    q_vec = np.array(query_vector)
+
+    for row in rows:
+        pd_no, pd_nm, v_blob, pd_prc = row
+        if v_blob:
+            # BLOB 데이터를 다시 float32 배열로 복원
+            i_vec = np.frombuffer(v_blob, dtype=np.float32)
+
+            # 코사인 유사도 계산
+            norm_q = np.linalg.norm(q_vec)
+            norm_i = np.linalg.norm(i_vec)
+            if norm_q > 0 and norm_i > 0:
+                similarity = np.dot(q_vec, i_vec) / (norm_q * norm_i)
+            else:
+                similarity = 0.0
+
+            results.append({
+                "pd_no": pd_no,
+                "pd_nm": pd_nm,
+                "similarity": float(similarity),
+                "pd_prc": pd_prc
+            })
+
+    # 유사도 높은 순으로 정렬 후 상위 N개 반환
+    results.sort(key=lambda x: x['similarity'], reverse=True)
+    return results[:limit]
+
+
 @app.get("/gemma-search")
 def gemma_search(query: str):
     conn = None
     start_time = time.time()
     try:
-        # 1. Ollama 키워드 추출
-        ollama_start = time.time()
-        keywords = extract_keywords_with_ollama(query)
-        ollama_runtime = round(time.time() - ollama_start, 3)
+        # 1. 키워드 추출
+        kw_start = time.time()
+        keywords = extract_keywords_with_llm(query)
+        kw_runtime = round(time.time() - kw_start, 3)
 
         # 2. 벡터화
         keyword_sentence = ", ".join(keywords)
         query_vector = embed_model.encode(keyword_sentence).tolist()
 
-        # 3. DB 검색 (Pool 활용)
-        conn = db_pool.getconn() # 풀에서 대기 없이 가져옴
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            # 인덱스 스캔 강제 설정 (세션별 적용)
-            cur.execute("SET enable_seqscan = off;")
+        # 3. SQLite 파일에서 유사도 검색 수행
+        search_results = search_in_sqlite(query_vector)
 
-            search_sql = """
-            SELECT pd_no, pd_nm, (1 - (item_vector <=> %s::vector)) AS similarity
-            FROM embedding_test
-            ORDER BY item_vector <=> %s::vector
-            LIMIT 10;
-            """
-            cur.execute(search_sql, (query_vector, query_vector))
-            results = cur.fetchall()
+        # # 3. DB 검색 (Pool 활용)
+        # conn = db_pool.getconn() # 풀에서 대기 없이 가져옴
+        # with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        #     # 인덱스 스캔 강제 설정 (세션별 적용)
+        #     cur.execute("SET enable_seqscan = off;")
+
+        #     search_sql = """
+        #     SELECT pd_no, pd_nm, (1 - (item_vector <=> %s::vector)) AS similarity
+        #     FROM embedding_test
+        #     ORDER BY item_vector <=> %s::vector
+        #     LIMIT 10;
+        #     """
+        #     cur.execute(search_sql, (query_vector, query_vector))
+        #     results = cur.fetchall()
 
         total_runtime = round(time.time() - start_time, 3)
         return {
             "input_query": query,
             "llm_recoommed_keywords": keywords,
-            "ollama_runtime": f"{ollama_runtime} s",
+            "kw_runtime": f"{kw_runtime} s",
             "total_runtime": f"{total_runtime} s",
-            "search_results": results
+            "search_results": search_results
         }
 
     except Exception as e:

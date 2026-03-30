@@ -6,7 +6,7 @@ from diskcache import Cache
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from util.get_db_config import get_db_config
-# gemma_search 내부에 extract_keywords_with_ollama가 포함되어 있으므로 하나만 호출 준비
+# gemma_search 내부에 extract_keywords_with_llm가 포함되어 있으므로 하나만 호출 준비
 from llm_search_api import gemma_search
 
 # --- 1. 초기 설정 및 캐시 로드 ---
@@ -78,7 +78,7 @@ if query:
     # 결과 데이터 분해
     keywords = ai_search_res.get("llm_recoommed_keywords", [])
     all_ai_results = ai_search_res.get("search_results", [])
-    ollama_runtime = ai_search_res.get("ollama_runtime", 0)
+    kw_runtime = ai_search_res.get("kw_runtime", 0)
     total_ai_runtime = time.time() - start_time_total
     # 화면 분할
     col1, col2 = st.columns(2)
@@ -143,4 +143,4 @@ if query:
 
     # --- 하단 분석 섹션 ---
     st.markdown("---")
-    st.caption(f"시스템 알림: {'캐시 적중! 즉시 응답 모드입니다.' if is_cached else '신규 쿼리 분석 모드입니다.'} (LLM 분석 소요: {ollama_runtime}s)")
+    st.caption(f"시스템 알림: {'캐시 적중! 즉시 응답 모드입니다.' if is_cached else '신규 쿼리 분석 모드입니다.'} (LLM 분석 소요: {kw_runtime}s)")
