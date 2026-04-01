@@ -111,6 +111,7 @@ if query:
     with col2:
         st.subheader("💡 AI: 지능형 의도 분석 검색")
         # gemma_search에서 가져온 키워드 리스트 표시
+        keyword_list = keywords if isinstance(keywords, list) else [keywords]
         keyword_str = ", ".join(keywords) if isinstance(keywords, list) else str(keywords)
         st.success(f"확장 키워드: {keyword_str}")
 
@@ -143,6 +144,37 @@ if query:
         else:
             st.warning("DB 내에 연관된 상품 결과가 없습니다.")
 
+
+        # --- 🚀 새로 추가 : 확장 키워드 기반 Java API 호출 및 중복 제거 ---
+        st.markdown("---")
+        st.subheader("🔗 확장 키워드 실제 검색 결과 (다이퀘스트 API)")
+
+        all_legacy_from_keywords = []
+        seen_pd_nos = set() # 중복 체크를 위한 셋
+
+        with st.spinner('확장 키워드로 실제 상품을 불러오는 중...'):
+            for kw in keyword_list:
+                # 위에서 정의한 get_java_search_results 재사용
+                raw_res = get_java_search_results(kw)
+
+                for item in raw_res:
+                    pd_no = item.get("pdNo")
+                    # 상품번호가 중복되지 않은 경우만 리스트에 추가
+                    if pd_no and pd_no not in seen_pd_nos:
+                        seen_pd_nos.add(pd_no)
+                        all_legacy_from_keywords.append({
+                            "품번": pd_no,
+                            "상품명": item.get("exhPdNm"),
+                            "출처키워드": kw  # 어떤 키워드 때문에 나왔는지 표시 (선택 사항)
+                        })
+
+        if all_legacy_from_keywords:
+            df_ext_legacy = pd.DataFrame(all_legacy_from_keywords)
+            st.write(f"✨ 중복 제거 후 총 **{len(df_ext_legacy)}**개의 상품을 찾았습니다.")
+            # 데이터가 많을 수 있으므로 table 대신 dataframe(스크롤 지원) 사용 권장
+            st.dataframe(df_ext_legacy, use_container_width=True)
+        else:
+            st.warning("확장 키워드에 대한 실제 검색 결과가 없습니다.")
     # --- 하단 분석 섹션 ---
     st.markdown("---")
     st.caption(f"시스템 알림: {'캐시 적중! 즉시 응답 모드입니다.' if is_cached else '신규 쿼리 분석 모드입니다.'} (LLM 분석 소요: {kw_runtime}s)")
