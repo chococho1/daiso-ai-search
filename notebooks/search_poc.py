@@ -117,6 +117,8 @@ if query:
         # 시간 측정: 캐시 적중 시 0에 수렴, 신규 쿼리 시 전체 수행 시간 계산
         # total_ai_runtime = time.time() - start_time_total
         st.metric("AI 검색 총 소요 시간", f"{total_ai_runtime:.3f} s", delta="-95% (Cache Hit)" if is_cached else None)
+        # LLM 분석 시간이 전체에서 차지하는 비율 계산
+        ratio = (float(kw_runtime) / float(total_ai_runtime)) * 100
 
         st.write(f"✅ 벡터 유사도 기반 상위 {len(all_ai_results)}개의 연관 상품")
         st.caption("※ 유사도가 '1'에 가까울수록 검색 의도와 일치합니다.")
