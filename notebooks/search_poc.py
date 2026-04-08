@@ -117,7 +117,7 @@ if query:
 
         # 시간 측정: 캐시 적중 시 0에 수렴, 신규 쿼리 시 전체 수행 시간 계산
         # total_ai_runtime = time.time() - start_time_total
-        st.metric("AI 검색 총 소요 시간", f"{total_ai_runtime:.3f} s", delta="-95% (Cache Hit)" if is_cached else None)
+        st.metric("유사도 기반 검색 총 소요 시간", f"{total_ai_runtime:.3f} s", delta="-95% (Cache Hit)" if is_cached else None)
         # LLM 분석 시간이 전체에서 차지하는 비율 계산
         ratio = (float(kw_runtime) / float(total_ai_runtime)) * 100
 
@@ -147,7 +147,7 @@ if query:
 
         # --- 🚀 새로 추가 : 확장 키워드 기반 Java API 호출 및 중복 제거 ---
         st.markdown("---")
-        st.subheader("🔗 확장 키워드 실제 검색 결과 (다이퀘스트 API)")
+        st.subheader("🔗 확장 키워드 실제 검색 결과 (검색엔진 API)")
 
         all_legacy_from_keywords = []
         seen_pd_nos = set() # 중복 체크를 위한 셋
@@ -170,7 +170,8 @@ if query:
 
         if all_legacy_from_keywords:
             df_ext_legacy = pd.DataFrame(all_legacy_from_keywords)
-            st.write(f"✨ 중복 제거 후 총 **{len(df_ext_legacy)}**개의 상품을 찾았습니다.")
+            st.metric("확장 키워드 + 검색엔진 API 기반 검색 총 소요 시간", f"{total_ai_runtime:.3f} s", delta="-95% (Cache Hit)" if is_cached else None)
+            st.write(f"✨ 총 **{len(df_ext_legacy)}**개의 상품을 찾았습니다.")
             # 데이터가 많을 수 있으므로 table 대신 dataframe(스크롤 지원) 사용 권장
             st.dataframe(df_ext_legacy, use_container_width=True)
         else:

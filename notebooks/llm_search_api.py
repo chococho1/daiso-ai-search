@@ -64,7 +64,7 @@ def extract_keywords_with_llm(user_query: str):
 
     sys_config = types.GenerateContentConfig(
         # system_instruction="쇼핑몰 검색 엔진용 키워드 추출기입니다. 설명 없이 쉼표로 구분된 키워드 10개만 출력하세요.",
-        temperature=0.1, # 0.2보다 약간 높여야 키워드가 중복되지 않고 풍부해집니다.
+        temperature=0.3, # 0.2보다 약간 높여야 키워드가 중복되지 않고 풍부해집니다.
         max_output_tokens=1000,
         safety_settings=[
             types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
