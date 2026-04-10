@@ -47,40 +47,82 @@ db_pool = psycopg2.pool.SimpleConnectionPool(
     maxconn=10,
     **DB_CONFIG
 )
+# --- llm 사용 config ---
+sys_config = types.GenerateContentConfig(
+    # system_instruction="쇼핑몰 검색 엔진용 키워드 추출기입니다. 설명 없이 쉼표로 구분된 키워드 10개만 출력하세요.",
+    temperature=0.3, # 0.2보다 약간 높여야 키워드가 중복되지 않고 풍부해집니다.
+    max_output_tokens=1000,
+    safety_settings=[
+        types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+        types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+    ]
+)
+
+
 logger = logging.getLogger("uvicorn")
 def extract_keywords_with_llm(user_query: str):
     # 1. Few-shot 프롬프트 (예시를 주면 10개를 꽉 채워서 답변합니다)
     prompt = f"""
     당신은 쇼핑 키워드 추출기입니다. 사용자의 검색어와 연관된 상품, 상황, 대상 키워드를 설명없이, 반드시 10개만 추출하세요.
-    설명 절대 하지마세요.
-    키워드 추출 시, 쉼표 기준으로 동일한 키워드 반복 하지마세요.
+
+    키워드 추출 규칙:
+
+    - 반드시 한국어로만 작성
+    - 쉼표로 구분
+    - 중복 제거
+    - 설명 금지
+    - "추천", "상품", "꿀템", "인기" 포함 금지
+    - 명사 형태만 허용
+    - 한국어 사전에 존재하는 단어만 사용
+    - 모든 키워드는 띄어쓰기 없이 하나의 단어 형태로 통일하라
+
+
+
+    [유효성 필터 규칙 - 매우 중요]
+
+    다음 조건을 만족하지 않는 키워드는 절대 포함하지 마세요:
+
+    1. 하나의 키워드는 오직 한글(가-힣)로만 구성되어야 한다
+    → 한글 이외의 문자(영문, 숫자, 아랍어 등)가 포함되면 제거
+
+    2. 의미가 완전한 명사만 허용한다
+    → "어주기", "하기", "되기", "용", "것" 등 불완전한 형태는 제거
+
+    3. 입력값의 일부를 잘라 만든 비정상 단어 금지
+    → 의미 없는 부분 문자열 추출 금지
+
+    4. 사람이 읽었을 때 자연스럽게 이해 가능한 단어만 허용
+
+    5. 실제 쇼핑 검색에서 사용 가능한 키워드만 허용
+
+    6. 최종 출력 전에 전체 키워드를 다시 검토하여
+    중복 및 유사 키워드를 제거하고 반드시 10개만 출력하라
+
+    7. 의미가 동일하거나 유사한 키워드는 하나만 남겨라
+    (예: "강아지간식" / "강아지 간식" → 하나만 선택)
+
     [예시]
     입력: 강아지 간식
-    출력: 개껌, 져키, 수제간식, 노령견, 칭찬용, 대용량, 덴탈껌, 연어트릿, 고단백, 강아지간식추천
+    출력: 개껌, 져키, 수제간식, 노령견, 칭찬용, 대용량, 덴탈껌, 연어트릿, 고단백, 강아지간식
+
+    입력: 꽃구경 갈 때 쓰기 좋은 상품
+    출력: 담요, 돗자리, 피크닉, 바구니, 피크닉가방, 도시락, 양산, 봄나들이, 벚꽃, 꽃놀이
 
     [실제 작업]
     입력: {user_query}
     출력:"""
 
-    sys_config = types.GenerateContentConfig(
-        # system_instruction="쇼핑몰 검색 엔진용 키워드 추출기입니다. 설명 없이 쉼표로 구분된 키워드 10개만 출력하세요.",
-        temperature=0.3, # 0.2보다 약간 높여야 키워드가 중복되지 않고 풍부해집니다.
-        max_output_tokens=1000,
-        safety_settings=[
-            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
-            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
-        ]
-    )
+
 
     try:
-        # 2. Gemini 호출 (contents를 리스트로 감싸서 전달)
+        # 1. Gemini 호출 (contents를 리스트로 감싸서 전달)
         response = client.models.generate_content(
             model='models/gemma-3-1b-it', # 혹은 리스트에서 확인하신 정확한 ID
             contents=[prompt],
             config=sys_config
         )
 
-        # 3. 텍스트 추출 (가장 안전한 방식)
+        # 2. 텍스트 추출 (가장 안전한 방식)
         raw_result = ""
         try:
             raw_result = response.text
@@ -120,13 +162,45 @@ def extract_keywords_with_llm(user_query: str):
         print(f"Gemini API Error: {e}")
         return [user_query]
 
+# 사용자 질의에서 카테고리 추출
+def extract_category_from_query(query: str):
+    prompt = f"""
+    사용자 검색어: "{query}"
+    위 검색어에서 가장 적합한 상품 카테고리를 아래 리스트 중에서 하나만 선택해줘.
+    카테고리: [국민득템, 뷰티/위생, 주방용품, 청소/욕실, 수납/정리, 문구/팬시, 인테리어/원예, 공구/디지털, 식품, 스포츠/레저/취미, 패션/잡화, 반려동물, 유아/완구, 시즌/시리즈]
+    결과는 반드시 제시한 카테고리명으로만 답해줘. 다른 설명은 하지마.
+    """
+
+    # 1. Gemini 호출 (contents를 리스트로 감싸서 전달)
+    response = client.models.generate_content(
+        model='models/gemma-3-1b-it', # 혹은 리스트에서 확인하신 정확한 ID
+        contents=[prompt],
+        config=sys_config
+    )
+
+    # 2. 카테고리 추출
+    raw_result = ""
+    try:
+        raw_result = response.text
+    except:
+        if response.candidates and response.candidates[0].content.parts:
+            raw_result = response.candidates[0].content.parts[0].text
+
+    raw_result = (raw_result or "").strip()
+
+    print("\n" + "🚀" * 20)
+    print(f"입력 검색어: {query}")
+    print(f"Gemini 원본 응답: [{raw_result}]")
+    print("🚀" * 20 + "\n")
+
+    return raw_result
 
 # --- 3. 벡터 유사도 검색 함수 (Numpy 기반) ---
-def search_in_sqlite(query_vector, limit=10):
+def embed_search(query_vector, target_category, limit=50):
     conn = sqlite3.connect('search_data.db')
     cur = conn.cursor()
     # SQLite에서 전체 데이터 로드 (데이터가 아주 많지 않을 때 효율적)
-    cur.execute("SELECT pd_no, pd_nm, item_vector FROM embedding_test")
+    cur.execute("SELECT pd_no, pd_nm, item_vector, exh_ctgr FROM embedding_test")
     rows = cur.fetchall()
     conn.close()
 
@@ -134,7 +208,7 @@ def search_in_sqlite(query_vector, limit=10):
     q_vec = np.array(query_vector)
 
     for row in rows:
-        pd_no, pd_nm, v_blob = row
+        pd_no, pd_nm, v_blob, exh_ctgr = row
         if v_blob:
             # BLOB 데이터를 다시 float32 배열로 복원
             i_vec = np.frombuffer(v_blob, dtype=np.float32)
@@ -147,9 +221,14 @@ def search_in_sqlite(query_vector, limit=10):
             else:
                 similarity = 0.0
 
+            # 가중치 로직 적용 -- 분석한 카테고리와 상품의 카테고리가 일치하면 가산점
+            exh_large_ctgr_nm = exh_ctgr.split('>')[0]
+            if target_category and (target_category in str(exh_large_ctgr_nm)):
+                similarity += 0.2
             results.append({
                 "pd_no": pd_no,
                 "pd_nm": pd_nm,
+                "large_category": exh_large_ctgr_nm,
                 "similarity": float(similarity),
             })
 
@@ -166,6 +245,7 @@ def gemma_search(query: str):
         # 1. 키워드 추출
         kw_start = time.time()
         keywords = extract_keywords_with_llm(query)
+        target_category = extract_category_from_query(query)
         kw_runtime = round(time.time() - kw_start, 3)
 
         # 2. 벡터화
@@ -173,8 +253,9 @@ def gemma_search(query: str):
         query_vector = embed_model.encode(keyword_sentence).tolist()
 
         # 3. SQLite 파일에서 유사도 검색 수행
-        search_results = search_in_sqlite(query_vector)
-
+        embed_search_start = time.time()
+        search_results = embed_search(query_vector, target_category)
+        embed_search_end = time.time()
         # # 3. DB 검색 (Pool 활용)
         # conn = db_pool.getconn() # 풀에서 대기 없이 가져옴
         # with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -195,7 +276,9 @@ def gemma_search(query: str):
             "input_query": query,
             "llm_recoommed_keywords": keywords,
             "kw_runtime": kw_runtime,
+            "embed_search_runtime": round(embed_search_end - embed_search_start, 3),
             "total_runtime": total_runtime,
+            "target_category": target_category,
             "search_results": search_results
         }
 

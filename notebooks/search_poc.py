@@ -7,7 +7,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from util.get_db_config import get_db_config
 # gemma_search 내부에 extract_keywords_with_llm가 포함되어 있으므로 하나만 호출 준비
-from llm_search_api import gemma_search
+from llm_search_api import gemma_search, embed_search
 
 # --- 1. 초기 설정 및 캐시 로드 ---
 # 캐시 디렉토리 설정 (86400초 = 24시간)
@@ -21,7 +21,7 @@ DB_CONFIG = get_db_config("localDB.properties")
 def get_java_search_results(query):
     """기존 자바 기반 키워드 검색 API 호출"""
     try:
-        response = requests.get(f"https://www.daisomall.co.kr/ssn/search/SearchGoods?searchTerm={query}", timeout=2)
+        response = requests.get(f"https://www.daisomall.co.kr/ssn/search/SearchGoods?searchTerm={query}&cntPerPage=50&isNoTypo=1", timeout=2)
         res_json = response.json()
         results_list = res_json.get("resultSet", {}).get("result", [])
         if results_list:
@@ -75,22 +75,24 @@ if query:
                 unsafe_allow_html=True
             )
 
+    # 실제 검색결과
+    t_start_java = time.time()
+    java_res = get_java_search_results(query)
+    t_end_java = time.time()
     # 결과 데이터 분해
     keywords = ai_search_res.get("llm_recoommed_keywords", [])
     all_ai_results = ai_search_res.get("search_results", [])
     kw_runtime = ai_search_res.get("kw_runtime", 0)
+    embed_search_runtime = ai_search_res.get("embed_search_runtime", 0)
+    target_category = ai_search_res.get("target_category")
     total_ai_runtime = time.time() - start_time_total
     # 화면 분할
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
 
-    # --- 좌측: 기존 검색 엔진 (Legacy) ---
+    # --- 1: 기존 검색 엔진 (Legacy) ---
     with col1:
         st.subheader("📊 Legacy: 기존 키워드 검색")
         st.info("검색어 일치 기반 (Java API)")
-
-        t_start_java = time.time()
-        java_res = get_java_search_results(query)
-        t_end_java = time.time()
 
         st.metric("응답 속도", f"{t_end_java - t_start_java:.3f} s")
 
@@ -107,19 +109,13 @@ if query:
         else:
             st.write("검색 결과가 없습니다.")
 
-    # --- 우측: AI 확장 검색 (Vector) ---
+    # --- 2: AI 확장 검색 (Vector) ---
     with col2:
-        st.subheader("💡 AI: 지능형 의도 분석 검색")
-        # gemma_search에서 가져온 키워드 리스트 표시
-        keyword_list = keywords if isinstance(keywords, list) else [keywords]
-        keyword_str = ", ".join(keywords) if isinstance(keywords, list) else str(keywords)
-        st.success(f"확장 키워드: {keyword_str}")
-
+        st.subheader("💡사용자 질의 유사도 기반 검색")
+        st.info("사용자 질의의 의도를 분석해 가장 연관성 있는 상품을 검색합니다.")
         # 시간 측정: 캐시 적중 시 0에 수렴, 신규 쿼리 시 전체 수행 시간 계산
         # total_ai_runtime = time.time() - start_time_total
-        st.metric("유사도 기반 검색 총 소요 시간", f"{total_ai_runtime:.3f} s", delta="-95% (Cache Hit)" if is_cached else None)
-        # LLM 분석 시간이 전체에서 차지하는 비율 계산
-        ratio = (float(kw_runtime) / float(total_ai_runtime)) * 100
+        st.metric("유사도 기반 검색 총 소요 시간", f"{embed_search_runtime:.3f} s", delta="-95% (Cache Hit)" if is_cached else None)
 
         st.write(f"✅ 벡터 유사도 기반 상위 {len(all_ai_results)}개의 연관 상품")
         st.caption("※ 유사도가 '1'에 가까울수록 검색 의도와 일치합니다.")
@@ -131,6 +127,7 @@ if query:
             rename_dict = {
                 "pd_no": "상품번호",
                 "pd_nm": "상품명",
+                "large_category": "카테고리",
                 "similarity": "유사도 점수"
             }
 
@@ -140,42 +137,82 @@ if query:
             if "유사도 점수" in df_ai_display.columns:
                 df_ai_display["유사도 점수"] = df_ai_display["유사도 점수"].apply(lambda x: f"{float(x):.3f}")
 
-            st.table(df_ai_display)
+            st.dataframe(df_ai_display, width='stretch')
         else:
             st.warning("DB 내에 연관된 상품 결과가 없습니다.")
 
 
-        # --- 🚀 새로 추가 : 확장 키워드 기반 Java API 호출 및 중복 제거 ---
-        st.markdown("---")
-        st.subheader("🔗 확장 키워드 실제 검색 결과 (검색엔진 API)")
+        # --- 3 : 확장 키워드 기반 Java API 호출 및 중복 제거 ---
+        with col3:
+            st.subheader("🔗 LLM 확장 키워드로 검색엔진 API 검색한 결과")
+            # gemma_search에서 가져온 키워드 리스트 표시
+            keyword_list = keywords if isinstance(keywords, list) else [keywords]
+            keyword_str = ", ".join(keywords) if isinstance(keywords, list) else str(keywords)
+            st.success(f"확장 키워드: {keyword_str}")
+            # st.write(f"(LLM 키워드 추출 소요: {kw_runtime}s)")
+            all_legacy_from_keywords = []
+            seen_pd_nos = set() # 중복 체크를 위한 셋
+            legacy_pd_nos = {item.get("pdNo") for item in java_res} if java_res else set() # col1 에서 나온 상품을 셋으로 변환.
+            final_result_dict = {}
+            with st.spinner('확장 키워드로 실제 상품을 불러오는 중...'):
+                for kw in keyword_list:
+                    # 위에서 정의한 get_java_search_results 재사용
+                    raw_res = get_java_search_results(kw)
 
-        all_legacy_from_keywords = []
-        seen_pd_nos = set() # 중복 체크를 위한 셋
+                    for item in raw_res:
+                        pd_no = item.get("pdNo", "")
+                        if not pd_no:
+                            continue
+                        if pd_no not in final_result_dict:
+                            exhPdNm = item.get("exhPdNm", "")
+                            img_url = item.get("pdImgUrl", "")
+                            exhLargeCtgrNm = item.get("exhLargeCtgrNm", "")
+                            # 가중치 계산
+                            priority_score = 0
+                            # 1) 카테고리 가중치
+                            category_match = target_category in exhLargeCtgrNm
+                            if category_match:
+                                priority_score += 500
+                            # 2) 실제 검색결과에도 있으면 가중치 추가
+                            if pd_no in legacy_pd_nos:
+                                priority_score += 500
 
-        with st.spinner('확장 키워드로 실제 상품을 불러오는 중...'):
-            for kw in keyword_list:
-                # 위에서 정의한 get_java_search_results 재사용
-                raw_res = get_java_search_results(kw)
+                            # 딕셔너리에 초기 정보 저장
+                            final_result_dict[pd_no] = {
+                                "이미지": f"https://cdn.daisomall.co.kr{img_url}",
+                                "품번": pd_no,
+                                "상품명": exhPdNm,
+                                "대카테고리": exhLargeCtgrNm,
+                                "출처키워드": [kw], # 어떤 키워드들에서 나왔는지 리스트로 저장
+                                "score": priority_score,
+                                "match_count": 1 # 출현 횟수 카운트
+                            }
+                        else:
+                            # 이미 발견된 상품인 경우 -> 🔥 추가 가중치 부여 🔥
+                            # 다른 키워드(kw)에서도 이 상품이 나왔으므로 점수 누적
+                            final_result_dict[pd_no]["score"] += 200  # 중복 노출 시마다 200점 추가
+                            final_result_dict[pd_no]["match_count"] += 1
+                            if kw not in final_result_dict[pd_no]["출처키워드"]:
+                                final_result_dict[pd_no]["출처키워드"].append(kw)
 
-                for item in raw_res:
-                    pd_no = item.get("pdNo")
-                    # 상품번호가 중복되지 않은 경우만 리스트에 추가
-                    if pd_no and pd_no not in seen_pd_nos:
-                        seen_pd_nos.add(pd_no)
-                        all_legacy_from_keywords.append({
-                            "품번": pd_no,
-                            "상품명": item.get("exhPdNm"),
-                            "출처키워드": kw  # 어떤 키워드 때문에 나왔는지 표시 (선택 사항)
-                        })
+                        all_legacy_from_keywords = list(final_result_dict.values())
 
-        if all_legacy_from_keywords:
-            df_ext_legacy = pd.DataFrame(all_legacy_from_keywords)
-            st.metric("확장 키워드 + 검색엔진 API 기반 검색 총 소요 시간", f"{total_ai_runtime:.3f} s", delta="-95% (Cache Hit)" if is_cached else None)
-            st.write(f"✨ 총 **{len(df_ext_legacy)}**개의 상품을 찾았습니다.")
-            # 데이터가 많을 수 있으므로 table 대신 dataframe(스크롤 지원) 사용 권장
-            st.dataframe(df_ext_legacy, use_container_width=True)
-        else:
-            st.warning("확장 키워드에 대한 실제 검색 결과가 없습니다.")
+            if all_legacy_from_keywords:
+                df_ext_legacy = pd.DataFrame(all_legacy_from_keywords)
+                df_ext_legacy = df_ext_legacy.sort_values(by="score", ascending=False)
+                st.metric("확장 키워드 + 검색엔진 API 기반 검색 총 소요 시간", f"{total_ai_runtime:.3f} s ", delta="-95% (Cache Hit)" if is_cached else f"(키워드 추출 소요 : {kw_runtime}s)")
+                st.write(f"✨ 총 **{len(df_ext_legacy)}**개의 상품을 찾았습니다.")
+                # 데이터가 많을 수 있으므로 table 대신 dataframe(스크롤 지원) 사용 권장
+                st.dataframe(
+                    df_ext_legacy,
+                    column_order=("이미지", "품번", "상품명", "대카테고리"),
+                    column_config={
+                        "이미지": st.column_config.ImageColumn("이미지", width="small"),
+                        "상품명": st.column_config.TextColumn("상품명", width="large")
+                    },
+                    width='stretch')
+            else:
+                st.warning("확장 키워드에 대한 실제 검색 결과가 없습니다.")
     # --- 하단 분석 섹션 ---
     st.markdown("---")
-    st.caption(f"시스템 알림: {'캐시 적중! 즉시 응답 모드입니다.' if is_cached else '신규 쿼리 분석 모드입니다.'} (LLM 분석 소요: {kw_runtime}s)")
+    # st.caption(f"시스템 알림: {'캐시 적중! 즉시 응답 모드입니다.' if is_cached else '신규 쿼리 분석 모드입니다.'} (LLM 분석 소요: {kw_runtime}s)")
